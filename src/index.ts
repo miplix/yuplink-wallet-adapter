@@ -84,11 +84,6 @@ function clearLs(k: string) {
   }
 }
 
-function randomBytes(n: number): Uint8Array {
-  const out = new Uint8Array(n);
-  crypto.getRandomValues(out);
-  return out;
-}
 
 async function genKeypair(): Promise<{
   privateKey: Uint8Array;
@@ -115,7 +110,7 @@ function jsonToBase64Url(obj: unknown): string {
 // ──────── Adapter behaviour ────────
 
 const YupLink: WalletBehaviourFactory<BrowserWallet, { params: YupLinkParams }> =
-  async ({ metadata, params, store, emitter, logger }) => {
+  async ({ params, emitter, logger }) => {
     void logger;
 
     const getCurrentAccount = (): Account | null => {
@@ -167,8 +162,7 @@ const YupLink: WalletBehaviourFactory<BrowserWallet, { params: YupLinkParams }> 
 
       const acc = { accountId, publicKey };
       emitter.emit("signedIn", {
-        contractId:
-          (store.getState().selectedWalletId === metadata.name ? "" : "") || "",
+        contractId: "",
         methodNames: [],
         accounts: [acc],
       });
@@ -245,22 +239,27 @@ const YupLink: WalletBehaviourFactory<BrowserWallet, { params: YupLinkParams }> 
         if (state) u.searchParams.set("state", state);
         window.location.assign(u.toString());
         // Не вернёмся — браузер уйдёт по редиректу. Тип требует Promise.
-        return undefined as unknown as ReturnType<
-          BrowserWallet["signMessage"]
-        >;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return undefined as any;
       },
 
       async signAndSendTransaction({ signerId, receiverId, actions, callbackUrl }) {
         const tx: Transaction = {
           signerId: signerId || readLs(ACCOUNT_KEY) || "",
-          receiverId,
+          receiverId: receiverId ?? "",
           actions,
         };
         return signAndSendTxs(params, [tx], callbackUrl);
       },
 
       async signAndSendTransactions({ transactions, callbackUrl }) {
-        return signAndSendTxs(params, transactions, callbackUrl);
+        const acc = readLs(ACCOUNT_KEY) || "";
+        const normalized: Transaction[] = transactions.map((t) => ({
+          signerId: t.signerId ?? acc,
+          receiverId: t.receiverId,
+          actions: t.actions,
+        }));
+        return signAndSendTxs(params, normalized, callbackUrl);
       },
     };
   };
