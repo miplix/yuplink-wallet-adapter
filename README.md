@@ -6,8 +6,17 @@
 
 ## Install
 
+Ставится прямо из GitHub — собранный `dist/` лежит в репо, в npm публиковать не нужно:
+
 ```bash
-npm i @miplix/yuplink-wallet-adapter @near-wallet-selector/core
+npm i github:miplix/yuplink-wallet-adapter @near-wallet-selector/core
+# или pnpm/yarn — то же самое: github:miplix/yuplink-wallet-adapter
+```
+
+Запинить на конкретный коммит/тег:
+
+```bash
+npm i github:miplix/yuplink-wallet-adapter#v0.1.1
 ```
 
 ## Usage
