@@ -11,6 +11,14 @@ interface SetupYupLinkOpts {
     id?: string;
     /** Глубокий лимит газа для FCAK в yocto. Дефолт 0.25 NEAR */
     defaultAllowance?: string;
+    /**
+     * Username Telegram-бота с подключённым Mini App (без @). Если задан —
+     * используется relay-режим (HOT-style): запрос идёт на /api/wallet-relay,
+     * юзер открывает t.me/<bot>?startapp=connect-<id> в своём Telegram,
+     * результат возвращается поллингом. Без редиректа dApp'а.
+     * По умолчанию — "yuplink_bot".
+     */
+    telegramBot?: string;
 }
 declare function setupYupLink(opts?: SetupYupLinkOpts): WalletModuleFactory<BrowserWallet>;
 

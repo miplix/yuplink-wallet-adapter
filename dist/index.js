@@ -128,21 +128,88 @@ var YupLink = async ({ params, emitter, logger }) => {
     async signIn({ contractId, methodNames, successUrl, failureUrl }) {
       const kp = await genKeypair();
       writeLs(
+        PRIVKEY_KEY,
+        uint8ToBase64Url(kp.privateKey)
+      );
+      writeLs(PUBKEY_KEY, kp.publicKeyStr);
+      writeLs(
         PENDING_KEY,
         JSON.stringify({
           privateKey: uint8ToBase64Url(kp.privateKey),
           publicKey: kp.publicKeyStr
         })
       );
+      try {
+        const createRes = await fetch(`${params.walletUrl}/api/wallet-relay`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "create",
+            publicKey: kp.publicKeyStr,
+            contractId: contractId ?? null,
+            methods: methodNames ?? [],
+            allowanceYocto: params.defaultAllowance,
+            appName: params.appName,
+            appIcon: params.iconUrl,
+            successUrl: successUrl ?? null
+          })
+        });
+        if (createRes.ok) {
+          const { requestId } = await createRes.json();
+          const tgLink = `https://t.me/${params.telegramBot}/app?startapp=connect-${requestId}`;
+          try {
+            window.open(tgLink, "_blank", "noopener,noreferrer");
+          } catch {
+            window.location.assign(tgLink);
+          }
+          const deadline = Date.now() + 10 * 60 * 1e3;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 1500));
+            try {
+              const pollRes = await fetch(
+                `${params.walletUrl}/api/wallet-relay`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "poll", id: requestId })
+                }
+              );
+              if (!pollRes.ok) continue;
+              const d = await pollRes.json();
+              if (d.status === "approved" && d.response) {
+                writeLs(ACCOUNT_KEY, d.response.accountId);
+                writeLs(PUBKEY_KEY, d.response.publicKey);
+                clearLs(PENDING_KEY);
+                const acc = {
+                  accountId: d.response.accountId,
+                  publicKey: d.response.publicKey
+                };
+                emitter.emit("signedIn", {
+                  contractId: contractId ?? "",
+                  methodNames: methodNames ?? [],
+                  accounts: [acc]
+                });
+                return [acc];
+              }
+              if (d.status === "rejected") {
+                clearLs(PENDING_KEY);
+                throw new Error("\u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043E\u0442\u043A\u043B\u043E\u043D\u0438\u043B \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435");
+              }
+              if (d.status === "expired" || d.status === "not_found") {
+                clearLs(PENDING_KEY);
+                throw new Error("\u0417\u0430\u043F\u0440\u043E\u0441 \u0438\u0441\u0442\u0451\u043A, \u043F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0435\u0449\u0451 \u0440\u0430\u0437");
+              }
+            } catch {
+            }
+          }
+          clearLs(PENDING_KEY);
+          throw new Error("\u0422\u0430\u0439\u043C\u0430\u0443\u0442 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F (10 \u043C\u0438\u043D)");
+        }
+      } catch {
+      }
       const u = new URL(`${params.walletUrl}/wallet/connect`);
-      u.searchParams.set(
-        "success_url",
-        successUrl || window.location.href
-      );
-      u.searchParams.set(
-        "failure_url",
-        failureUrl || window.location.href
-      );
+      u.searchParams.set("success_url", successUrl || window.location.href);
+      u.searchParams.set("failure_url", failureUrl || window.location.href);
       u.searchParams.set("public_key", kp.publicKeyStr);
       if (contractId) u.searchParams.set("contract_id", contractId);
       if (methodNames && methodNames.length > 0) {
@@ -244,8 +311,9 @@ function setupYupLink(opts = {}) {
       appName: opts.appName || "External dApp",
       iconUrl: opts.iconUrl || null,
       walletUrl: (opts.walletUrl || DEFAULT_WALLET_URL).replace(/\/$/, ""),
-      defaultAllowance: opts.defaultAllowance || "250000000000000000000000"
+      defaultAllowance: opts.defaultAllowance || "250000000000000000000000",
       // 0.25 NEAR
+      telegramBot: (opts.telegramBot ?? "yuplink_bot").replace(/^@/, "")
     };
     return {
       id: opts.id || "yuplink-wallet",

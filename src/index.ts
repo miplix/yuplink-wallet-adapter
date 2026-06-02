@@ -53,6 +53,14 @@ export interface SetupYupLinkOpts {
   id?: string;
   /** Глубокий лимит газа для FCAK в yocto. Дефолт 0.25 NEAR */
   defaultAllowance?: string;
+  /**
+   * Username Telegram-бота с подключённым Mini App (без @). Если задан —
+   * используется relay-режим (HOT-style): запрос идёт на /api/wallet-relay,
+   * юзер открывает t.me/<bot>?startapp=connect-<id> в своём Telegram,
+   * результат возвращается поллингом. Без редиректа dApp'а.
+   * По умолчанию — "yuplink_bot".
+   */
+  telegramBot?: string;
 }
 
 interface YupLinkParams {
@@ -60,6 +68,7 @@ interface YupLinkParams {
   iconUrl: string | null;
   walletUrl: string;
   defaultAllowance: string;
+  telegramBot: string;
 }
 
 function readLs(k: string): string | null {
@@ -177,6 +186,11 @@ const YupLink: WalletBehaviourFactory<BrowserWallet, { params: YupLinkParams }> 
         const kp = await genKeypair();
         // Сохраняем privateKey локально, чтобы потом подписывать tx FCAK'ом
         writeLs(
+          PRIVKEY_KEY,
+          uint8ToBase64Url(kp.privateKey)
+        );
+        writeLs(PUBKEY_KEY, kp.publicKeyStr);
+        writeLs(
           PENDING_KEY,
           JSON.stringify({
             privateKey: uint8ToBase64Url(kp.privateKey),
@@ -184,15 +198,97 @@ const YupLink: WalletBehaviourFactory<BrowserWallet, { params: YupLinkParams }> 
           })
         );
 
+        // ───── Relay-режим: создаём запрос на сервере, открываем
+        // t.me/<bot>?startapp=connect-<id> у юзера, поллим ответ.
+        // dApp при этом ОСТАЁТСЯ на текущей странице — никакого редиректа.
+        try {
+          const createRes = await fetch(`${params.walletUrl}/api/wallet-relay`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "create",
+              publicKey: kp.publicKeyStr,
+              contractId: contractId ?? null,
+              methods: methodNames ?? [],
+              allowanceYocto: params.defaultAllowance,
+              appName: params.appName,
+              appIcon: params.iconUrl,
+              successUrl: successUrl ?? null,
+            }),
+          });
+          if (createRes.ok) {
+            const { requestId } = (await createRes.json()) as {
+              requestId: string;
+            };
+            const tgLink = `https://t.me/${params.telegramBot}/app?startapp=connect-${requestId}`;
+            try {
+              window.open(tgLink, "_blank", "noopener,noreferrer");
+            } catch {
+              window.location.assign(tgLink);
+            }
+
+            // Поллим ответ. Таймаут 10 мин (как TTL у relay).
+            const deadline = Date.now() + 10 * 60 * 1000;
+            while (Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 1500));
+              try {
+                const pollRes = await fetch(
+                  `${params.walletUrl}/api/wallet-relay`,
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "poll", id: requestId }),
+                  }
+                );
+                if (!pollRes.ok) continue;
+                const d = (await pollRes.json()) as {
+                  status: string;
+                  response?: {
+                    accountId: string;
+                    publicKey: string;
+                    transactionHashes: string;
+                  } | null;
+                };
+                if (d.status === "approved" && d.response) {
+                  writeLs(ACCOUNT_KEY, d.response.accountId);
+                  writeLs(PUBKEY_KEY, d.response.publicKey);
+                  clearLs(PENDING_KEY);
+                  const acc = {
+                    accountId: d.response.accountId,
+                    publicKey: d.response.publicKey,
+                  };
+                  emitter.emit("signedIn", {
+                    contractId: contractId ?? "",
+                    methodNames: methodNames ?? [],
+                    accounts: [acc],
+                  });
+                  return [acc];
+                }
+                if (d.status === "rejected") {
+                  clearLs(PENDING_KEY);
+                  throw new Error("Пользователь отклонил подключение");
+                }
+                if (d.status === "expired" || d.status === "not_found") {
+                  clearLs(PENDING_KEY);
+                  throw new Error("Запрос истёк, попробуй ещё раз");
+                }
+                // status === "pending" → продолжаем поллинг
+              } catch {
+                /* сетевая ошибка — продолжаем поллинг */
+              }
+            }
+            clearLs(PENDING_KEY);
+            throw new Error("Таймаут подключения (10 мин)");
+          }
+          // Если relay-сервер не ответил → падаем в legacy redirect-флоу.
+        } catch {
+          /* fall through to redirect */
+        }
+
+        // ───── Legacy: classic MyNearWallet redirect (fallback) ─────
         const u = new URL(`${params.walletUrl}/wallet/connect`);
-        u.searchParams.set(
-          "success_url",
-          successUrl || window.location.href
-        );
-        u.searchParams.set(
-          "failure_url",
-          failureUrl || window.location.href
-        );
+        u.searchParams.set("success_url", successUrl || window.location.href);
+        u.searchParams.set("failure_url", failureUrl || window.location.href);
         u.searchParams.set("public_key", kp.publicKeyStr);
         if (contractId) u.searchParams.set("contract_id", contractId);
         if (methodNames && methodNames.length > 0) {
@@ -201,10 +297,7 @@ const YupLink: WalletBehaviourFactory<BrowserWallet, { params: YupLinkParams }> 
         u.searchParams.set("allowance", params.defaultAllowance);
         u.searchParams.set("app_name", params.appName);
         if (params.iconUrl) u.searchParams.set("app_icon", params.iconUrl);
-
         window.location.assign(u.toString());
-        // selector ожидает Account[]; вернётся пусто, реальное событие
-        // прилетит после редиректа
         return [];
       },
 
@@ -318,6 +411,7 @@ export function setupYupLink(
       walletUrl: (opts.walletUrl || DEFAULT_WALLET_URL).replace(/\/$/, ""),
       defaultAllowance:
         opts.defaultAllowance || "250000000000000000000000", // 0.25 NEAR
+      telegramBot: (opts.telegramBot ?? "yuplink_bot").replace(/^@/, ""),
     };
     return {
       id: opts.id || "yuplink-wallet",

@@ -34,11 +34,22 @@ const selector = await setupWalletSelector({
       // опционально:
       // walletUrl: "https://service.yupland.io", // для dev/staging
       // defaultAllowance: "250000000000000000000000", // 0.25 NEAR
+      // telegramBot: "yuplink_bot",                  // для relay-режима
     }),
     // ... другие кошельки
   ],
 });
 ```
+
+## Cross-device flow (HOT-style)
+
+`signIn()` теперь использует **relay-мост**: dApp **остаётся на своей
+странице**, юзер открывает кошелёк в своём Telegram (`t.me/yuplink_bot`),
+подписывает, результат приходит обратно поллингом. Это работает даже
+если кошелёк юзера на телефоне, а dApp — в десктоп-Chrome.
+
+Если relay недоступен — адаптер автоматически падает в classic
+MyNearWallet-style redirect-флоу (как раньше).
 
 ## How it works
 
